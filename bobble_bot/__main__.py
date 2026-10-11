@@ -122,6 +122,7 @@ def main(argv=None) -> int:
     period = 1.0 / cfg.target_fps
     fps, last_screen, run_start, runs = 0.0, Screen.UNKNOWN, None, 0
     last_action: Action | None = None
+    last_status = 0.0
     overlay_ready = False
     try:
         while not flags.stop:
@@ -141,6 +142,13 @@ def main(argv=None) -> int:
                 log.info("GAME OVER #%d after %.1fs%s", runs, dur, f", debug saved to {d}" if d else "")
                 run_start = None
             last_screen = st.screen
+            if t2 - last_status > 2.0:
+                last_status = t2
+                log.info("status: screen=%s (hud=%.2f via %s) player=%s lane=%+d obstacles=%d coins=%d free=%s capture=%dx%d",
+                         st.screen.value, vision.debug.get("pause_btn", 0), vision.debug.get("screen_src", "-"),
+                         "found" if st.player.found else "NOT FOUND", st.player.lane, len(st.obstacles),
+                         len(st.targets), {k: round(z) for k, z in st.lane_free.items()},
+                         frame.shape[1], frame.shape[0])
 
             action = None
             if flags.test_action:

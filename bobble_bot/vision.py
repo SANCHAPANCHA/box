@@ -81,6 +81,8 @@ class Vision:
         self.tracker = Tracker()
         self.speed = 15.0
         self.jump_h = 0.0
+        self.player_streak = 0
+        self.btn_idx, self.btn_search_t = -1, -1e9
         self.debug: dict = {}
 
     # ---------- setup ----------
@@ -95,7 +97,17 @@ class Vision:
 
     def _pause_templates(self):
         out = []
-        for d in range(18, 60, 4):
+        # HUD buttons have a fixed CSS size, so their pixel size depends on the
+        # screen resolution and Windows scaling: cover 12..120 px in the full-res frame
+        d = 12.0
+        while d <= 120:
+            out.append(self._pause_template(int(round(d))))
+            d *= 1.12
+        return out
+
+    @staticmethod
+    def _pause_template(d: int):
+        if True:
             t = np.full((d + 6, d + 6), 140, np.uint8)
             c = (d + 6) // 2
             cv2.circle(t, (c, c), d // 2, 20, -1)
@@ -104,17 +116,30 @@ class Vision:
             for sx in (-1, 1):
                 x = c + sx * int(d * 0.11)
                 cv2.rectangle(t, (x - bw // 2, c - bh // 2), (x + bw // 2, c + bh // 2), 20, -1)
-            out.append(t)
-        return out
+            return t
 
     # ---------- screen ----------
-    def classify_screen(self, img: np.ndarray, gray: np.ndarray, hsv: np.ndarray) -> tuple[Screen, float]:
+    def classify_screen(self, frame: np.ndarray, gray: np.ndarray, hsv: np.ndarray) -> tuple[Screen, float]:
         h, w = gray.shape
-        roi = gray[: int(h * 0.16), int(w * 0.80):]
-        best = 0.0
-        for t in self.templates:
-            if t.shape[0] < roi.shape[0] and t.shape[1] < roi.shape[1]:
-                best = max(best, float(cv2.matchTemplate(roi, t, cv2.TM_CCOEFF_NORMED).max()))
+        fh, fw = frame.shape[:2]
+        roi = cv2.cvtColor(frame[: int(fh * 0.16), int(fw * 0.80):], cv2.COLOR_BGR2GRAY)
+        def match(idx):
+            sc = []
+            for i in idx:
+                t = self.templates[i]
+                if t.shape[0] < roi.shape[0] and t.shape[1] < roi.shape[1]:
+                    sc.append((float(cv2.matchTemplate(roi, t, cv2.TM_CCOEFF_NORMED).max()), i))
+            return max(sc, default=(0.0, -1))
+
+        # the button size never changes during a session: remember it, full search only on a miss
+        best, bi = 0.0, -1
+        if self.btn_idx >= 0:
+            best, bi = match(range(max(0, self.btn_idx - 1), min(len(self.templates), self.btn_idx + 2)))
+        if best < self.cfg.pause_btn_threshold and time.perf_counter() - self.btn_search_t > 0.5:
+            self.btn_search_t = time.perf_counter()
+            best, bi = match(range(len(self.templates)))
+        if best >= self.cfg.pause_btn_threshold:
+            self.btn_idx = bi
         self.debug["pause_btn"] = best
         if best >= self.cfg.pause_btn_threshold:
             return Screen.PLAYING, best
@@ -314,7 +339,14 @@ class Vision:
         self.debug = {"scale": scale}
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        screen, _ = self.classify_screen(img, gray, hsv)
+        screen, _ = self.classify_screen(frame_bgr, gray, hsv)
+        if screen == Screen.MENU:
+            # fallback when the HUD button is not recognised: the runner is visible
+            probe = self.detect_player(hsv, t)
+            self.player_streak = self.player_streak + 1 if probe.found else 0
+            if self.player_streak >= 3:
+                screen = Screen.PLAYING
+        self.debug["screen_src"] = "hud" if self.debug.get("pause_btn", 0) >= self.cfg.pause_btn_threshold else "player"
         player = Player(alive=screen != Screen.GAME_OVER)
         obstacles, targets = [], []
         if screen == Screen.PLAYING:
