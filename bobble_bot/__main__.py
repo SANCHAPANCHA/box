@@ -17,11 +17,11 @@ import cv2
 
 from .config import GAME_URL, BotConfig
 from .decision import Action, load_engine
-from .winutil import make_dpi_aware, make_overlay_passive
+from .winutil import focus_window, make_dpi_aware, make_overlay_passive
 from .state import Screen
 from .vision import Vision, VisionConfig
 
-WINDOW = "BOBBLE BOT debug"
+WINDOW = "bot debug overlay"
 log = logging.getLogger("bot")
 
 
@@ -117,7 +117,18 @@ def main(argv=None) -> int:
 
     log.info("Region %s. Bot %s. F8 stop, F9 pause/resume, F10 test action.",
              cfg.region, "ACTIVE" if flags.active else "PAUSED (observe only)")
-    log.info("Click into the game once so the browser has focus.")
+    def focus_game() -> None:
+        if a.dry_run:
+            return
+        title = focus_window(cfg.window_title_contains, ctl.EXCLUDE)
+        if title:
+            log.info("Focused game window: %s", title)
+        else:
+            log.warning("No window with '%s' in its title. Open the game in Chrome and click into it.",
+                        cfg.window_title_contains)
+
+    focus_game()
+    last_blocked_warn = 0.0
 
     period = 1.0 / cfg.target_fps
     fps, last_screen, run_start, runs = 0.0, Screen.UNKNOWN, None, 0
@@ -144,11 +155,14 @@ def main(argv=None) -> int:
             last_screen = st.screen
             if t2 - last_status > 2.0:
                 last_status = t2
-                log.info("status: screen=%s (hud=%.2f via %s) player=%s lane=%+d obstacles=%d coins=%d free=%s capture=%dx%d",
-                         st.screen.value, vision.debug.get("pause_btn", 0), vision.debug.get("screen_src", "-"),
+                # raw frame for diagnostics: send logs/last_capture.jpg when reporting problems
+                cv2.imwrite(os.path.join(cfg.log_dir, "last_capture.jpg"), frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                log.info("status: screen=%s (hud=%.2f receipt=%.2f) player=%s lane=%+d obstacles=%d coins=%d "
+                         "free=%s last_action=%s capture=%dx%d",
+                         st.screen.value, vision.debug.get("pause_btn", 0), vision.debug.get("receipt", 0),
                          "found" if st.player.found else "NOT FOUND", st.player.lane, len(st.obstacles),
                          len(st.targets), {k: round(z) for k, z in st.lane_free.items()},
-                         frame.shape[1], frame.shape[0])
+                         last_action.name if last_action else "-", frame.shape[1], frame.shape[0])
 
             action = None
             if flags.test_action:
@@ -160,6 +174,11 @@ def main(argv=None) -> int:
                 sent = ctl.tap(action.key, action.hold)
                 if not sent:
                     action.reason += " [blocked: game window not focused]"
+                    if t2 - last_blocked_warn > 3.0:
+                        last_blocked_warn = t2
+                        log.warning("Key '%s' NOT sent: active window is '%s', not the game. Refocusing...",
+                                    action.key, ctl.last_title)
+                        focus_game()
                 rec.log_action(action, st)
                 log.debug("%s conf=%.2f %s", action.name, action.confidence, action.reason)
             if action is not None:

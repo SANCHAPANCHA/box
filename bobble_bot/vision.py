@@ -82,7 +82,7 @@ class Vision:
         self.speed = 15.0
         self.jump_h = 0.0
         self.player_streak = 0
-        self.btn_idx, self.btn_search_t = -1, -1e9
+        self.btn_idx, self.btn_search_t, self.btn_last = -1, -1e9, 0.0
         self.debug: dict = {}
 
     # ---------- setup ----------
@@ -132,14 +132,17 @@ class Vision:
             return max(sc, default=(0.0, -1))
 
         # the button size never changes during a session: remember it, full search only on a miss
-        best, bi = 0.0, -1
+        best, bi = -1.0, -1
         if self.btn_idx >= 0:
             best, bi = match(range(max(0, self.btn_idx - 1), min(len(self.templates), self.btn_idx + 2)))
         if best < self.cfg.pause_btn_threshold and time.perf_counter() - self.btn_search_t > 0.5:
             self.btn_search_t = time.perf_counter()
             best, bi = match(range(len(self.templates)))
+        if best < 0:
+            best = self.btn_last  # no search this frame
         if best >= self.cfg.pause_btn_threshold:
-            self.btn_idx = bi
+            self.btn_idx = bi if bi >= 0 else self.btn_idx
+        self.btn_last = best
         self.debug["pause_btn"] = best
         if best >= self.cfg.pause_btn_threshold:
             return Screen.PLAYING, best

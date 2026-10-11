@@ -28,9 +28,12 @@ def foreground_title() -> str | None:
 class InputController:
     """Base class: sends abstract game keys, guarded by a safety check."""
 
+    EXCLUDE = ("bot debug",)  # our own overlay window
+
     def __init__(self, title_contains: str = ""):
         self.title_contains = title_contains.lower()
         self.enabled = True
+        self.last_title: str | None = None
 
     def allowed(self) -> bool:
         if not self.enabled:
@@ -38,7 +41,11 @@ class InputController:
         if not self.title_contains:
             return True
         title = foreground_title()
-        return title is None or self.title_contains in title.lower()
+        self.last_title = title
+        if title is None:
+            return True
+        t = title.lower()
+        return self.title_contains in t and not any(e in t for e in self.EXCLUDE)
 
     def tap(self, key: str, hold: float = 0.05) -> bool:
         if key not in GAME_KEYS:
