@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+config.json
+logs/
+dataset/
+debug_offline/
+.shots/
