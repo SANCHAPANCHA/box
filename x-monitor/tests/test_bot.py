@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import pytest
-from aiogram.methods import AnswerCallbackQuery, EditMessageText, TelegramMethod
+from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage, TelegramMethod
 from sqlalchemy import select
 
 from bot.callbacks import Acc, Hist, Nav, Notif, Sett, Stat
 from models import Subscription, User
 from services.account_manager import AccountManager
 from services.cache import Cache
-from tests.conftest import FakeX
+from tests.conftest import FakeX, make_user
 from tests.tg_helpers import OWNER, STRANGER, callback_update, message_update, texts
+
+
+def markup(requests: list[TelegramMethod]) -> str:
+    """Button texts of the last message sent or edited."""
+    for r in reversed(requests):
+        if isinstance(r, EditMessageText | SendMessage) and r.reply_markup:
+            return " | ".join(b.text for row in r.reply_markup.inline_keyboard for b in row)
+    return ""
 
 
 @pytest.fixture
@@ -48,7 +56,7 @@ async def test_unauthorized_user_is_rejected(tg) -> None:
 async def test_start_and_every_menu_renders(tg) -> None:
     message, callback, sf = tg
     out = await message("/start")
-    assert "X Monitor" in texts(out) and "Мои аккаунты" in str(out[-1].reply_markup)
+    assert "X Monitor" in texts(out) and "Мои аккаунты" in markup(out)
     async with sf() as session:
         assert await session.scalar(select(User).where(User.telegram_id == OWNER)) is not None
 
@@ -120,6 +128,31 @@ async def test_settings_are_persisted(tg) -> None:
 
     out = await callback(Sett(action="interval", value="7"))
     assert any(isinstance(r, AnswerCallbackQuery) and r.show_alert for r in out)
+
+
+async def test_fast_interval_respects_server_minimum(bot_env, sf, settings) -> None:
+    bot, dp, session = bot_env
+    await make_user(sf, telegram_id=OWNER)
+
+    async def cb(data, cfg):
+        start = len(session.requests)
+        await dp.feed_update(bot, callback_update(data), settings=cfg, account_manager=None)
+        return session.requests[start:]
+
+    # Server minimum 15 s (old .env): 5 s is hidden, rejected and explained.
+    out = await cb(Sett(action="interval_menu"), settings)
+    assert "MIN_POLL_INTERVAL_SECONDS=5" in texts(out)
+    assert "5 сек" not in markup(out).split(" | ") and "10 сек" not in markup(out)
+    out = await cb(Sett(action="interval", value="5"), settings)
+    assert any(isinstance(r, AnswerCallbackQuery) and r.show_alert for r in out)
+
+    fast = settings.model_copy(update={"min_poll_interval_seconds": 5})
+    out = await cb(Sett(action="interval_menu"), fast)
+    assert "MIN_POLL_INTERVAL_SECONDS" not in texts(out) and "5 сек" in markup(out).split(" | ")
+    await cb(Sett(action="interval", value="5"), fast)
+    async with sf() as s:
+        user = await s.scalar(select(User).where(User.telegram_id == OWNER))
+    assert user.poll_interval_seconds == 5
 
 
 async def test_history_search_and_dates(tg) -> None:

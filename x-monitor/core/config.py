@@ -36,8 +36,9 @@ class Settings(BaseSettings):
 
     # Monitoring
     default_poll_interval_seconds: int = Field(default=60, ge=15)
-    min_poll_interval_seconds: int = Field(default=15, ge=5)
-    monitor_tick_seconds: int = Field(default=5, ge=1)
+    min_poll_interval_seconds: int = Field(default=5, ge=5)
+    # How often due accounts are looked up; keeps the real interval close to the chosen one.
+    monitor_tick_seconds: int = Field(default=1, ge=1)
     monitor_concurrency: int = Field(default=5, ge=1, le=50)
     dispatcher_tick_seconds: int = Field(default=2, ge=1)
     error_notify_threshold: int = Field(default=3, ge=1)

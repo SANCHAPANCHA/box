@@ -21,7 +21,8 @@ from services.timeutils import describe_tz, parse_timezone_input, utcnow
 
 router = Router(name="settings")
 
-INTERVALS = [15, 30, 60, 120, 300, 600, 900, 1800, 3600]
+INTERVALS = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
+APP_RATE_LIMIT_15M = 10_000  # GET /2/users/:id/tweets, per app (docs.x.com rate limits)
 TZ_PRESETS = [
     "Europe/Moscow", "Europe/Kyiv", "Europe/Minsk", "Europe/Berlin", "Europe/London", "Asia/Almaty",
     "Asia/Tashkent", "Asia/Yekaterinburg", "Asia/Novosibirsk", "Asia/Vladivostok", "America/New_York", "UTC",
@@ -79,16 +80,31 @@ async def cb_errors(call: CallbackQuery, db_user: User) -> None:
 async def cb_interval_menu(call: CallbackQuery, session: AsyncSession, db_user: User, settings: Settings) -> None:
     accounts = await AccountRepository(session).count_monitored()
     per_15m = accounts * 900 / max(db_user.poll_interval_seconds, 1)
-    text = (
-        "⏱ <b>Частота проверки</b>\n\n"
-        f"Сейчас: <b>{human_interval(db_user.poll_interval_seconds)}</b>\n\n"
-        "Каждая проверка аккаунта — 1 запрос к X API (лента пользователя с <code>since_id</code>).\n"
-        "• Лимит X: 10 000 запросов / 15 мин на приложение.\n"
-        f"• Сейчас ≈ <b>{per_15m:.0f}</b> запросов / 15 мин для {accounts} аккаунтов.\n"
-        "• Оплата pay-per-use начисляется за каждую полученную публикацию (≈ $0.005), "
-        "поэтому частые проверки в основном влияют на скорость, а не на объём данных.\n\n"
-        "Чем меньше интервал, тем быстрее приходят уведомления."
-    )
+    max_accounts_5s = APP_RATE_LIMIT_15M * 5 // 900
+    lines = [
+        "⏱ <b>Частота проверки</b>",
+        "",
+        f"Сейчас: <b>{human_interval(db_user.poll_interval_seconds)}</b>",
+        "",
+        "Каждая проверка аккаунта — 1 запрос к X API (лента пользователя с <code>since_id</code>).",
+        "• Лимит X: 10 000 запросов / 15 мин на приложение.",
+        f"• Сейчас ≈ <b>{per_15m:.0f}</b> запросов / 15 мин для {accounts} аккаунтов.",
+        f"• При 5 сек лимита хватает примерно на {max_accounts_5s} аккаунтов.",
+        "• Оплата pay-per-use начисляется за каждую полученную публикацию (≈ $0.005). "
+        "Тарифицируются ли пустые ответы, X не документирует — проверьте расход в console.x.com.",
+    ]
+    if per_15m > APP_RATE_LIMIT_15M:
+        lines.append(
+            "\n⚠️ <b>Лимит X будет превышен</b>: часть проверок будет откладываться до сброса лимита. "
+            "Увеличьте интервал или уменьшите число аккаунтов."
+        )
+    if settings.min_poll_interval_seconds > min(INTERVALS):
+        lines.append(
+            f"\nℹ️ Интервалы меньше {settings.min_poll_interval_seconds} сек отключены на сервере. "
+            "Чтобы включить 5 и 10 сек, укажите в .env <code>MIN_POLL_INTERVAL_SECONDS=5</code> "
+            "и выполните <code>docker compose up -d</code>."
+        )
+    lines.append("\nЧем меньше интервал, тем быстрее приходят уведомления и срабатывает автопокупка.")
     kb = InlineKeyboardBuilder()
     for seconds in INTERVALS:
         if seconds < settings.min_poll_interval_seconds:
@@ -97,7 +113,7 @@ async def cb_interval_menu(call: CallbackQuery, session: AsyncSession, db_user: 
         kb.button(text=f"{mark}{human_interval(seconds)}", callback_data=Sett(action="interval", value=str(seconds)))
     kb.adjust(3)
     kb.row(*nav_row(Sett(action="menu")))
-    await show(call, text, kb.as_markup())
+    await show(call, "\n".join(lines), kb.as_markup())
 
 
 @router.callback_query(Sett.filter(F.action == "interval"))
