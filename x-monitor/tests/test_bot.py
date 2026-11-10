@@ -2,61 +2,16 @@
 
 from __future__ import annotations
 
-import itertools
-from datetime import UTC, datetime
-from typing import Any
-
 import pytest
-from aiogram import Bot
-from aiogram.client.session.base import BaseSession
-from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage, TelegramMethod
-from aiogram.types import CallbackQuery, Chat, Message, Update
-from aiogram.types import User as TgUser
+from aiogram.methods import AnswerCallbackQuery, EditMessageText, TelegramMethod
 from sqlalchemy import select
 
 from bot.callbacks import Acc, Hist, Nav, Notif, Sett, Stat
-from bot.factory import create_dispatcher
-from core.database import create_session_factory
 from models import Subscription, User
 from services.account_manager import AccountManager
 from services.cache import Cache
 from tests.conftest import FakeX
-
-OWNER = 1001
-STRANGER = 666
-_ids = itertools.count(1)
-
-
-class MockedSession(BaseSession):
-    def __init__(self) -> None:
-        super().__init__()
-        self.requests: list[TelegramMethod] = []
-
-    async def make_request(self, bot: Bot, method: TelegramMethod, timeout: int | None = None) -> Any:
-        self.requests.append(method)
-        if isinstance(method, SendMessage | EditMessageText):
-            chat_id = getattr(method, "chat_id", None) or OWNER
-            return Message(
-                message_id=next(_ids),
-                date=datetime.now(UTC),
-                chat=Chat(id=chat_id, type="private"),
-                text=method.text,
-            ).as_(bot)
-        return True
-
-    async def close(self) -> None:
-        pass
-
-    async def stream_content(self, *args, **kwargs):  # pragma: no cover
-        yield b""
-
-
-@pytest.fixture(scope="session")
-def bot_env(engine, settings):
-    session = MockedSession()
-    bot = Bot("42:TEST-token", session=session)
-    dp = create_dispatcher(settings, create_session_factory(engine))
-    return bot, dp, session
+from tests.tg_helpers import OWNER, STRANGER, callback_update, message_update, texts
 
 
 @pytest.fixture
@@ -69,44 +24,15 @@ def tg(bot_env, sf, settings):
 
     async def message(text: str, user_id: int = OWNER) -> list[TelegramMethod]:
         start = len(session.requests)
-        update = Update(
-            update_id=next(_ids),
-            message=Message(
-                message_id=next(_ids),
-                date=datetime.now(UTC),
-                chat=Chat(id=user_id, type="private"),
-                from_user=TgUser(id=user_id, is_bot=False, first_name="Tester"),
-                text=text,
-            ),
-        )
-        await dp.feed_update(bot, update, account_manager=manager, settings=settings)
+        await dp.feed_update(bot, message_update(text, user_id), account_manager=manager, settings=settings)
         return session.requests[start:]
 
     async def callback(data, user_id: int = OWNER) -> list[TelegramMethod]:
         start = len(session.requests)
-        update = Update(
-            update_id=next(_ids),
-            callback_query=CallbackQuery(
-                id=str(next(_ids)),
-                from_user=TgUser(id=user_id, is_bot=False, first_name="Tester"),
-                chat_instance="ci",
-                data=data.pack(),
-                message=Message(
-                    message_id=next(_ids),
-                    date=datetime.now(UTC),
-                    chat=Chat(id=user_id, type="private"),
-                    text="menu",
-                ),
-            ),
-        )
-        await dp.feed_update(bot, update, account_manager=manager, settings=settings)
+        await dp.feed_update(bot, callback_update(data, user_id), account_manager=manager, settings=settings)
         return session.requests[start:]
 
     return message, callback, sf
-
-
-def texts(requests: list[TelegramMethod]) -> str:
-    return "\n".join(r.text for r in requests if isinstance(r, SendMessage | EditMessageText))
 
 
 async def test_unauthorized_user_is_rejected(tg) -> None:

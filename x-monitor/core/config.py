@@ -43,6 +43,17 @@ class Settings(BaseSettings):
     error_notify_threshold: int = Field(default=3, ge=1)
     default_timezone: str = "UTC"
 
+    # Auto-buy on Robinhood Chain (Pons). Off unless enabled and a wallet key is set.
+    trading_enabled: bool = False
+    wallet_private_key: SecretStr | None = None
+    robinhood_rpc_url: str = "https://rpc.mainnet.chain.robinhood.com"
+    # Telegram user IDs allowed to trade; empty = every allowed bot user.
+    trading_allowed_user_ids: str = ""
+    # Buys older than this (e.g. after downtime) are skipped instead of executed at a stale moment.
+    trade_max_age_seconds: int = Field(default=300, ge=10)
+    # ETH always left in the wallet for gas.
+    trade_gas_reserve_eth: str = "0.0005"
+    trade_tick_seconds: int = Field(default=1, ge=1)
     # Service
     log_level: str = "INFO"
     log_json: bool = False
@@ -59,7 +70,7 @@ class Settings(BaseSettings):
             raise ValueError(f"Unknown timezone: {value}") from exc
         return value
 
-    @field_validator("telegram_allowed_user_ids")
+    @field_validator("telegram_allowed_user_ids", "trading_allowed_user_ids")
     @classmethod
     def _validate_ids(cls, value: str) -> str:
         for part in value.replace(";", ",").split(","):
@@ -68,14 +79,30 @@ class Settings(BaseSettings):
                 raise ValueError(f"Invalid Telegram user id: {part!r}")
         return value
 
+    @staticmethod
+    def _ids(value: str) -> frozenset[int]:
+        return frozenset(int(p.strip()) for p in value.replace(";", ",").split(",") if p.strip())
+
     @property
     def allowed_user_ids(self) -> frozenset[int]:
-        return frozenset(
-            int(p.strip()) for p in self.telegram_allowed_user_ids.replace(";", ",").split(",") if p.strip()
-        )
+        return self._ids(self.telegram_allowed_user_ids)
+
+    @property
+    def trading_configured(self) -> bool:
+        return self.trading_enabled and bool(self.wallet_private_key and self.wallet_private_key.get_secret_value())
+
+    def can_trade(self, telegram_id: int) -> bool:
+        if not self.trading_configured:
+            return False
+        traders = self._ids(self.trading_allowed_user_ids)
+        return telegram_id in (traders or self.allowed_user_ids)
 
     def secret_values(self) -> list[str]:
-        return [s for s in (self.telegram_bot_token.get_secret_value(), self.x_bearer_token.get_secret_value()) if s]
+        secrets = [self.telegram_bot_token.get_secret_value(), self.x_bearer_token.get_secret_value()]
+        if self.wallet_private_key:
+            key = self.wallet_private_key.get_secret_value()
+            secrets += [key, key.removeprefix("0x")]
+        return [s for s in secrets if s]
 
 
 @lru_cache

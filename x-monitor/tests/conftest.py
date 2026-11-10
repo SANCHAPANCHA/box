@@ -48,6 +48,20 @@ async def sf(engine: AsyncEngine) -> SessionFactory:
     return create_session_factory(engine)
 
 
+@pytest.fixture(scope="session")
+def bot_env(engine, settings):
+    """One Dispatcher per test session: aiogram routers can be attached only once."""
+    from aiogram import Bot
+
+    from bot.factory import create_dispatcher
+    from tests.tg_helpers import MockedSession
+
+    session = MockedSession()
+    bot = Bot("42:TEST-token", session=session)
+    dp = create_dispatcher(settings, create_session_factory(engine))
+    return bot, dp, session
+
+
 async def make_user(sf: SessionFactory, telegram_id: int = 1001, **kw) -> User:
     async with session_scope(sf) as session:
         user = User(telegram_id=telegram_id, chat_id=telegram_id, timezone=kw.pop("timezone", "UTC"), **kw)

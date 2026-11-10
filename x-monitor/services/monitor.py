@@ -22,6 +22,7 @@ from repositories import AccountRepository, EventRepository, NotificationReposit
 from services.account_manager import AccountManager
 from services.alerts import Alerter
 from services.timeutils import utcnow
+from services.trading import TradePlanner
 from services.x_client import (
     XAccountUnavailable,
     XApiError,
@@ -85,11 +86,19 @@ def event_values(account: XAccount, post: XPost) -> dict:
 
 
 class Monitor:
-    def __init__(self, session_factory: SessionFactory, x_client: XClient, alerter: Alerter, settings: Settings):
+    def __init__(
+        self,
+        session_factory: SessionFactory,
+        x_client: XClient,
+        alerter: Alerter,
+        settings: Settings,
+        planner: TradePlanner | None = None,
+    ):
         self._sf = session_factory
         self._x = x_client
         self._alerter = alerter
         self._settings = settings
+        self._planner = planner
         self._sem = asyncio.Semaphore(settings.monitor_concurrency)
         self.last_tick_at: datetime | None = None
 
@@ -187,6 +196,14 @@ class Monitor:
                 for sub, user in subscribers:
                     status, reason = notification_decision(user, sub, post.type)
                     await notifications.create(event_id, user.id, user.chat_id, status, reason)
+                if self._planner is not None:
+                    # Same transaction as the event (restart-safe), inside a savepoint so a
+                    # trading problem can never block notifications.
+                    try:
+                        async with session.begin_nested():
+                            await self._planner.plan(session, event_id, account, post, subscribers)
+                    except Exception:
+                        log.exception("auto-buy planning failed for post %s", post.id)
             if posts:
                 account.last_seen_post_id = max(last_seen, posts[-1].id)
             account.last_checked_at = now

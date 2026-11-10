@@ -27,6 +27,35 @@ sys.path.insert(0, str(ROOT))
 
 from services.x_client import snowflake_from_datetime  # noqa: E402
 
+# Optional auto-buy scenario against an anvil fork of Robinhood Chain.
+FORK_RPC = os.environ.get("FORK_RPC")
+FORK_POOL_TOKEN = os.environ.get("FORK_POOL_TOKEN")
+WALLET = None
+if FORK_RPC:
+    from eth_account import Account
+
+    WALLET = Account.create()
+
+
+def push_callback(data) -> None:
+    push_update(
+        {
+            "callback_query": {
+                "id": str(_next["update"] + 9000),
+                "from": {"id": OWNER, "is_bot": False, "first_name": "Tester"},
+                "chat_instance": "ci",
+                "data": data.pack(),
+                "message": {
+                    "message_id": 1,
+                    "date": int(time.time()),
+                    "chat": {"id": OWNER, "type": "private"},
+                    "text": "menu",
+                },
+            }
+        }
+    )
+
+
 PORT = 9911
 API_PORT = 8099
 TOKEN = "123456789:AAFakeTokenForSmokeTest_abcdefghijklmnop"
@@ -124,7 +153,8 @@ async def wait_for(predicate, timeout: float, what: str):
         if result:
             return result
         await asyncio.sleep(0.2)
-    raise AssertionError(f"timeout waiting for: {what}")
+    recent = [m.get("text", "")[:200] for m in sent[-3:]]
+    raise AssertionError(f"timeout waiting for: {what}; last bot messages: {recent}")
 
 
 def notifications() -> list[dict]:
@@ -146,6 +176,12 @@ def start_app(log_path: Path) -> subprocess.Popen:
         "LOG_LEVEL": "DEBUG",
     }
     env.pop("REDIS_URL", None)
+    if FORK_RPC:
+        env.update(
+            TRADING_ENABLED="true",
+            WALLET_PRIVATE_KEY=WALLET.key.hex(),
+            ROBINHOOD_RPC_URL=FORK_RPC,
+        )
     log = log_path.open("a")
     return subprocess.Popen([sys.executable, "main.py"], cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
 
@@ -223,12 +259,38 @@ async def scenario(log_path: Path) -> None:
         await asyncio.sleep(18)
         assert len(notifications()) == 2
         print("✔ quote detected once")
+
+        if FORK_RPC and FORK_POOL_TOKEN:
+            from bot.callbacks import Trd
+
+            async with httpx.AsyncClient() as http:
+                await http.post(
+                    FORK_RPC,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "anvil_setBalance",
+                        "params": [WALLET.address, hex(10**18)],
+                    },
+                )
+            push_callback(Trd(action="toggle"))
+            await wait_for(lambda: any("ВКЛЮЧЕНА" in m.get("text", "") for m in sent), 15, "auto-buy enabled")
+            add_x_post(
+                snowflake_from_datetime(datetime.now(UTC) + timedelta(seconds=1)), f"new coin $CA:{FORK_POOL_TOKEN}"
+            )
+            bought = await wait_for(
+                lambda: [m for m in sent if "Куплен токен" in m.get("text", "")], 60, "auto-buy message"
+            )
+            assert "reply_markup" in bought[0] and "sell_ask" in bought[0]["reply_markup"], bought[0]
+            print("✔ contract in post -> token bought on fork, message has sell buttons")
     finally:
         if proc.poll() is None:
             stop_app(proc)
 
     logs = log_path.read_text()
     assert TOKEN not in logs and BEARER not in logs, "secret leaked into logs"
+    if WALLET is not None:
+        assert WALLET.key.hex().removeprefix("0x") not in logs, "wallet key leaked into logs"
     assert "Traceback" not in logs, "unexpected traceback in logs"
     print("✔ no secrets / tracebacks in logs")
 

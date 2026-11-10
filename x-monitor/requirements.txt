@@ -10,3 +10,4 @@ pydantic-settings==2.16.2
 fastapi==0.162.2
 uvicorn==0.54.0
 tzdata==2026.6
+web3==7.16.0

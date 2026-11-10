@@ -23,8 +23,10 @@ from core.logging import setup_logging
 from services.account_manager import AccountManager
 from services.alerts import Alerter
 from services.cache import Cache
+from services.chain import CHAIN_ID, ChainClient
 from services.monitor import Monitor
 from services.notification import NotificationDispatcher
+from services.trading import TradeExecutor, TradePlanner
 from services.x_client import XClient
 from tasks.scheduler import build_scheduler
 
@@ -35,6 +37,17 @@ class _ApiServer(uvicorn.Server):
     @contextlib.contextmanager
     def capture_signals(self):  # signals are handled by main()
         yield
+
+
+async def wait_for_running_jobs(scheduler, timeout: float) -> None:
+    """Let an in-flight poll / delivery / trade finish instead of cancelling it mid-way."""
+    executor = scheduler._lookup_executor("default")
+    deadline = asyncio.get_running_loop().time() + timeout
+    while any(executor._instances.values()):  # APScheduler 3.x: running instances per job id
+        if asyncio.get_running_loop().time() > deadline:
+            log.warning("jobs still running after %.0fs, stopping anyway", timeout)
+            return
+        await asyncio.sleep(0.2)
 
 
 async def main() -> None:
@@ -70,13 +83,29 @@ async def main() -> None:
     async def send_alert(chat_id: int, text: str) -> None:
         await bot.send_message(chat_id, text, link_preview_options=LinkPreviewOptions(is_disabled=True))
 
-    monitor = Monitor(session_factory, x_client, Alerter(session_factory, send_alert), settings)
-    dispatcher = NotificationDispatcher(session_factory, TelegramSender(bot))
+    monitor_planner: TradePlanner | None = None
+    chain: ChainClient | None = None
+    trade_executor: TradeExecutor | None = None
+    sender = TelegramSender(bot)
+    if settings.trading_configured:
+        chain = ChainClient(settings.robinhood_rpc_url, settings.wallet_private_key.get_secret_value())
+        chain_id = await chain.chain_id()
+        if chain_id != CHAIN_ID:
+            raise SystemExit(f"ROBINHOOD_RPC_URL points to chain {chain_id}, expected Robinhood Chain {CHAIN_ID}")
+        monitor_planner = TradePlanner(settings)
+        trade_executor = TradeExecutor(session_factory, chain, settings, sender.send_trade)
+        await trade_executor.recover()
+        log.info("auto-buy enabled, wallet %s", chain.address)
+    else:
+        log.info("auto-buy disabled (TRADING_ENABLED / WALLET_PRIVATE_KEY not set)")
+
+    monitor = Monitor(session_factory, x_client, Alerter(session_factory, send_alert), settings, monitor_planner)
+    dispatcher = NotificationDispatcher(session_factory, sender)
     await dispatcher.recover()
 
     dp = create_dispatcher(settings, session_factory, storage)
     await bot.set_my_commands(BOT_COMMANDS)
-    scheduler = build_scheduler(monitor, dispatcher, settings)
+    scheduler = build_scheduler(monitor, dispatcher, settings, trade_executor)
     scheduler.start()
 
     tasks = [
@@ -87,6 +116,7 @@ async def main() -> None:
                 close_bot_session=False,
                 account_manager=AccountManager(x_client, Cache(redis)),
                 settings=settings,
+                chain=chain,
                 allowed_updates=dp.resolve_used_update_types(),
             ),
             name="telegram-polling",
@@ -117,6 +147,8 @@ async def main() -> None:
             log.error("component %s crashed", task.get_name(), exc_info=task.exception())
 
     log.info("shutting down…")
+    scheduler.pause()
+    await wait_for_running_jobs(scheduler, timeout=45)
     scheduler.shutdown(wait=False)
     with contextlib.suppress(RuntimeError):
         await dp.stop_polling()

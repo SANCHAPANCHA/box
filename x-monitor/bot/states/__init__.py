@@ -14,3 +14,7 @@ class HistoryInput(StatesGroup):
 
 class SettingsInput(StatesGroup):
     timezone = State()
+
+
+class TradingInput(StatesGroup):
+    value = State()

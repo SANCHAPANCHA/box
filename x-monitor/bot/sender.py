@@ -54,3 +54,13 @@ class TelegramSender:
 
     async def send_text(self, chat_id: int, text: str, *, silent: bool = False) -> int:
         return await self._send(chat_id, text, None, LinkPreviewOptions(is_disabled=True), silent)
+
+    async def send_trade(self, chat_id: int, text: str, sell_trade_id: int | None) -> None:
+        from bot.handlers.trading import trade_keyboard  # avoid an import cycle with the handlers
+
+        await self.bot.send_message(
+            chat_id,
+            text,
+            reply_markup=trade_keyboard(sell_trade_id),
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+        )

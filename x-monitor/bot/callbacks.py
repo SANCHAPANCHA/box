@@ -34,5 +34,12 @@ class Stat(CallbackData, prefix="st"):
     period: str = "day"
 
 
+class Trd(CallbackData, prefix="trd"):
+    action: str
+    value: str = ""
+    id: int = 0
+    page: int = 0
+
+
 class Noop(CallbackData, prefix="noop"):
     pass

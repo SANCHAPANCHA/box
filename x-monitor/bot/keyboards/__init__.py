@@ -39,6 +39,7 @@ def main_menu() -> InlineKeyboardMarkup:
     kb.row(btn("🗑 Удалить аккаунт", Acc(action="del_list")), btn("📊 Статистика", Nav(to="stats")))
     kb.row(btn("📜 История", Nav(to="history")), btn("🔔 Уведомления", Nav(to="notif")))
     kb.row(btn("⚙️ Настройки", Nav(to="settings")), btn("ℹ️ Помощь", Nav(to="help")))
+    kb.row(btn("💰 Автопокупка токенов", Nav(to="trading")))
     return kb.as_markup()
 
 

@@ -9,7 +9,7 @@ from aiogram.fsm.storage.base import BaseStorage
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
-from bot.handlers import accounts, fallback, history, notifications, start, stats
+from bot.handlers import accounts, fallback, history, notifications, start, stats, trading
 from bot.handlers import settings as settings_handlers
 from bot.middlewares import AuthMiddleware, DbSessionMiddleware
 from core.config import Settings
@@ -35,6 +35,7 @@ def create_dispatcher(
         settings_handlers.router,
         history.router,
         stats.router,
+        trading.router,
         fallback.router,  # must stay last
     )
     return dp

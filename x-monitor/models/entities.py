@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
@@ -13,11 +14,13 @@ from sqlalchemy import (
     Index,
     Integer,
     MetaData,
+    Numeric,
     SmallInteger,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -67,6 +70,24 @@ class NotificationStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class TradeSide(str, enum.Enum):
+    BUY = "buy"
+    SELL = "sell"
+
+
+class TradeStatus(str, enum.Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    SUBMITTED = "submitted"  # tx signed and hash stored before broadcast
+    SUCCESS = "success"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+ETH_AMOUNT = Numeric(30, 18)
+WEI = Numeric(78, 0)
+
+
 class User(Base):
     """Telegram user. Notification settings live here (one row per user)."""
 
@@ -92,6 +113,14 @@ class User(Base):
     grouping_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     error_notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
 
+    # Auto-buy (Pons on Robinhood Chain). Amounts are in ETH.
+    autobuy_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    buy_amount_eth: Mapped[Decimal] = mapped_column(ETH_AMOUNT, default=Decimal("0.01"), server_default="0.01")
+    max_mcap_eth: Mapped[Decimal | None] = mapped_column(ETH_AMOUNT)
+    slippage_bps: Mapped[int] = mapped_column(Integer, default=1000, server_default="1000")
+    max_creator_tax_bps: Mapped[int | None] = mapped_column(Integer, default=500, server_default="500")
+    daily_limit_eth: Mapped[Decimal | None] = mapped_column(ETH_AMOUNT, default=Decimal("0.1"), server_default="0.1")
+    max_buys_per_day: Mapped[int | None] = mapped_column(Integer, default=10, server_default="10")
     subscriptions: Mapped[list[Subscription]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
     def wants(self, event_type: EventType) -> bool:
@@ -149,6 +178,7 @@ class Subscription(Base):
     x_account_id: Mapped[int] = mapped_column(ForeignKey("x_accounts.id", ondelete="CASCADE"), index=True)
     is_paused: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     notify_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    autobuy_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     user: Mapped[User] = relationship(back_populates="subscriptions")
@@ -227,3 +257,50 @@ class KeyValue(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class Trade(Base):
+    """Auto-buy / manual sell on Robinhood Chain. Also the work queue for TradeExecutor."""
+
+    __tablename__ = "trades"
+    __table_args__ = (
+        # A token is auto-bought at most once per user, however often its address is posted.
+        Index(
+            "uq_trades_user_token_buy",
+            "user_id",
+            "token_address",
+            unique=True,
+            postgresql_where=text("side = 'buy'"),
+        ),
+        Index("ix_trades_status_id", "status", "id"),
+        Index("ix_trades_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    side: Mapped[TradeSide] = mapped_column(_str_enum(TradeSide, "trade_side"))
+    status: Mapped[TradeStatus] = mapped_column(
+        _str_enum(TradeStatus, "trade_status"), default=TradeStatus.PENDING, server_default="pending"
+    )
+    token_address: Mapped[str] = mapped_column(String(42))
+    token_symbol: Mapped[str | None] = mapped_column(String(64))
+    x_account_id: Mapped[int | None] = mapped_column(ForeignKey("x_accounts.id", ondelete="SET NULL"))
+    event_id: Mapped[int | None] = mapped_column(ForeignKey("events.id", ondelete="SET NULL"))
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("trades.id", ondelete="SET NULL"))
+    sell_pct: Mapped[int | None] = mapped_column(SmallInteger)
+    venue: Mapped[str | None] = mapped_column(String(8))
+    amount_in: Mapped[Decimal | None] = mapped_column(WEI)  # wei (buy: ETH, sell: tokens)
+    amount_out: Mapped[Decimal | None] = mapped_column(WEI)  # wei (buy: tokens, sell: ETH)
+    mcap_wei: Mapped[Decimal | None] = mapped_column(WEI)
+    gas_wei: Mapped[Decimal | None] = mapped_column(WEI)
+    tx_hash: Mapped[str | None] = mapped_column(String(66))
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    user: Mapped[User] = relationship()
+    account: Mapped[XAccount | None] = relationship()
+    event: Mapped[Event | None] = relationship()

@@ -7,6 +7,9 @@ from models.entities import (
     Notification,
     NotificationStatus,
     Subscription,
+    Trade,
+    TradeSide,
+    TradeStatus,
     User,
     XAccount,
 )
@@ -20,6 +23,9 @@ __all__ = [
     "Notification",
     "NotificationStatus",
     "Subscription",
+    "Trade",
+    "TradeSide",
+    "TradeStatus",
     "User",
     "XAccount",
 ]
